@@ -5,15 +5,12 @@
 # payments
 # driving
 
-# METHODS TO ADD
-# Add event
-# Modify person
-# Modify event
-# Delete person
-# Delete event
-# View people
-# View events
-# Generate balance
+# THINGS TO ADD
+# Share calculations
+# Balance calculations
+# Balance output
+# Parsing
+# Rounding errors
 
 # QUESTIONS
 # How is best to parse the date input?
@@ -22,13 +19,10 @@
 import sqlite3 as lite
 import sys
 
-
-
-
-
 class DatabaseHandler:
     
     def __init__(self, con):
+        con.row_factory = lite.Row
         self.con = con
         self.cur = con.cursor()
         self.cur.execute("""CREATE TABLE IF NOT EXISTS people(
@@ -87,9 +81,31 @@ class DatabaseHandler:
         return idx
 
 
-    def link_people_to_event(self, event_idx, people_list):
-        for pp in people_list:
-            self.cur.execute("INSERT INTO p_e(person, event) VALUES(?,?);", (pp,event_idx))
+    def delete_person(self, field, match):
+        instruct = "SELECT * FROM people WHERE %s=?" % field
+        self.cur.execute(instruct, (match,))
+        print instruct
+        print match
+        person = self.cur.fetchone()
+        idx = person["idx"]
+        self.cur.execute("DELETE FROM people WHERE idx=?", (idx,))
+        self.cur.execute("DELETE FROM p_e WHERE person=?", (idx,))
+        self.con.commit()
+
+
+    def delete_event(self, field, match):
+        instruct = "SELECT * FROM events WHERE %s=?" % field
+        self.cur.execute(instruct, (match,))
+        event = self.cur.fetchone()
+        idx = event["idx"]
+        self.cur.execute("DELETE FROM events WHERE idx=?", (idx,))
+        self.cur.execute("DELETE FROM p_e WHERE event=?", (idx,))
+        self.con.commit()
+
+
+    def link_people_to_event(self, event_idx, people_idx_list, ratio_list):
+        for (pp,rr) in zip(people_idx_list, ratio_list):
+            self.cur.execute("INSERT INTO p_e(person, event, ratio) VALUES(?,?,?);", (pp,event_idx,rr))
         self.con.commit()
 
 
@@ -112,6 +128,7 @@ class DatabaseHandler:
         events = self.cur.fetchall()
         return events
 
+
     def retrieve_events_by_person(self, person_idx):
         self.cur.execute("SELECT * FROM p_e WHERE person=?", (person_idx,))
         link_list = self.cur.fetchall()
@@ -123,6 +140,19 @@ class DatabaseHandler:
             events.append(event)
         return events
 
+
+    def retrieve_people_by_event(self, event_idx):
+        self.cur.execute("SELECT * FROM p_e WHERE event=?", (event_idx,))
+        link_list = self.cur.fetchall()
+        people = []
+        ratios = []
+        for ll in link_list:
+            person_idx = ll["person"]
+            self.cur.execute("SELECT * FROM people WHERE idx=?",(person_idx,))
+            person = self.cur.fetchone()
+            people.append(person)
+            ratios.append(ll["ratio"])
+        return people,ratios
 
 
 
@@ -139,23 +169,28 @@ vp = View people list
 ve = View event list
 ap = Add person
 ae = Add event
-mp = Modify person
-me = Modify event
 dp = Delete person
 de = Delete event
-s  = Statement
+sp = Statement for a single person
+se = Statement for a single event
 q  = quit\n:""")
         
             if ans == "ap":
                 self.cb_add_person()
             if ans == "ae":
                 self.cb_add_event()
+            if ans == "dp":
+                self.cb_remove_person()
+            if ans == "de":
+                self.cb_remove_event()
             if ans == "vp":
                 self.cb_view_people()
             if ans == "ve":
                 self.cb_view_events()
-            if ans == "s":
-                self.cb_statement()
+            if ans == "sp":
+                self.cb_person_statement()
+            if ans == "se":
+                self.cb_event_statement()
             if ans == "q":
                 sys.exit()
 
@@ -192,9 +227,23 @@ q  = quit\n:""")
         # Now get a list of people contributing
         self.display_people()
         tmp = raw_input("Enter a list of ids seperated by spaces for the people who attended this event:")
-        people_list = map(int, tmp.split())
+        people_idx_list = map(int, tmp.split())
+        tmp = raw_input("Enter the payment ratios for each person seperated by spaces (so if two people, \"2 1\" means the first person pays twice as much):")
+        ratio_list = map(float, tmp.split())
         # THIS NEEDS SOME MORE PARSING TO MAKE SURE THEY'RE VALID, EXISTING IDXS
-        self.db.link_people_to_event(event_idx, people_list)
+        self.db.link_people_to_event(event_idx, people_idx_list, ratio_list)
+
+
+    def cb_remove_person(self):
+        self.display_people()
+        idx = raw_input("Enter the id of the person you want to remove:")
+        self.db.delete_person("idx", idx)
+
+
+    def cb_remove_event(self):
+        self.display_events()
+        idx = raw_input("Enter the id of the event you want to remove:")
+        self.db.delete_event("idx", idx)
 
 
     def cb_view_people(self):
@@ -207,15 +256,33 @@ q  = quit\n:""")
         raw_input("Press enter to continue")
 
 
-    def cb_statement(self):
+    def cb_person_statement(self):
         self.display_people()
         idx = raw_input("Enter the id of the person whose statement you want:")
-        subject = self.db.retrieve_people('idx', idx)
-        subject_idx = subject[0]["idx"]
-        print "Retrieving statement for %s." % subject[0]["name"]
+        subject = self.db.retrieve_people('idx', idx)[0]
+        subject_idx = subject["idx"]
+        print "Retrieving statement for %s." % subject["name"]
         events = self.db.retrieve_events_by_person(subject_idx)
         for ee in events:
             print "%2s | %-20s | %-10s | %-10s | %s" % (ee["idx"], ee["name"], ee["date"], ee["cost"], ee["notes"])
+        raw_input("Press enter to continue")
+
+
+    def cb_event_statement(self):
+        self.display_events()
+        idx = raw_input("Enter the id of the event whose details you want:")
+        subject = self.db.retrieve_events("idx", idx)[0]
+        subject_idx = subject["idx"]
+        people,ratios = self.db.retrieve_people_by_event(subject_idx)
+        print "_______________________________________"
+        print "Event: %s" % subject["name"]
+        print "Date:  %s" % subject["date"]
+        print u'Cost:  £%s' % subject["cost"]
+        print "Notes: %s" % subject["notes"]
+        print "The following people participated in this event:"
+        for (pp, rr) in zip(people,ratios):
+            print "     %2s | %-20s | %-5s " % (pp["idx"], pp["name"], str(rr))
+        print "_______________________________________"
         raw_input("Press enter to continue")
 
 
@@ -266,8 +333,6 @@ else:
 
 con = lite.connect(filename)
 with con:
-    con.row_factory = lite.Row
-    cur = con.cursor()
     db = DatabaseHandler(con)
     ui = CmdLineUI(db)
     ui.main()
